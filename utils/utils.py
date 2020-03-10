@@ -188,6 +188,7 @@ def ap_per_class(tp, conf, pred_cls, target_cls):
     unique_classes = np.unique(target_cls)
 
     # Create Precision-Recall curve and compute AP for each class
+    pr_score = 0.5  # score to evaluate P and R https://github.com/ultralytics/yolov3/issues/898
     s = [len(unique_classes), tp.shape[1]]  # number class, number iou thresholds (i.e. 10 for mAP0.5...0.95)
     ap, p, r = np.zeros(s), np.zeros(s), np.zeros(s)
     for ci, c in enumerate(unique_classes):
@@ -204,21 +205,23 @@ def ap_per_class(tp, conf, pred_cls, target_cls):
 
             # Recall
             recall = tpc / (n_gt + 1e-16)  # recall curve
-            r[ci] = recall[-1]
+            r[ci] = np.interp(-pr_score, -conf[i], recall[:, 0])  # r at pr_score, negative x, xp because xp decreases
 
             # Precision
             precision = tpc / (tpc + fpc)  # precision curve
-            p[ci] = precision[-1]
+            p[ci] = np.interp(-pr_score, -conf[i], precision[:, 0])  # p at pr_score
 
             # AP from recall-precision curve
             for j in range(tp.shape[1]):
                 ap[ci, j] = compute_ap(recall[:, j], precision[:, j])
 
             # Plot
-            # fig, ax = plt.subplots(1, 1, figsize=(4, 4))
-            # ax.plot(np.concatenate(([0.], recall)), np.concatenate(([0.], precision)))
-            # ax.set_title('YOLOv3-SPP'); ax.set_xlabel('Recall'); ax.set_ylabel('Precision')
-            # ax.set_xlim(0, 1)
+            # fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+            # ax.plot(recall, precision)
+            # ax.set_xlabel('Recall')
+            # ax.set_ylabel('Precision')
+            # ax.set_xlim(0, 1.01)
+            # ax.set_ylim(0, 1.01)
             # fig.tight_layout()
             # fig.savefig('PR_curve.png', dpi=300)
 
@@ -341,13 +344,13 @@ def wh_iou(wh1, wh2):
 class FocalLoss(nn.Module):
     # Wraps focal loss around existing loss_fcn() https://arxiv.org/pdf/1708.02002.pdf
     # i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=2.5)
-    def __init__(self, loss_fcn, gamma=0.5, alpha=1, reduction='mean'):
+    def __init__(self, loss_fcn, gamma=0.5, alpha=1):
         super(FocalLoss, self).__init__()
-        loss_fcn.reduction = 'none'  # required to apply FL to each element
         self.loss_fcn = loss_fcn
         self.gamma = gamma
         self.alpha = alpha
-        self.reduction = reduction
+        self.reduction = loss_fcn.reduction
+        self.loss_fcn.reduction = 'none'  # required to apply FL to each element
 
     def forward(self, input, target):
         loss = self.loss_fcn(input, target)
@@ -361,19 +364,27 @@ class FocalLoss(nn.Module):
             return loss
 
 
-def compute_loss(p, targets, model, giou_flag=True):  # predictions, targets, model
+def compute_loss(p, targets, model):  # predictions, targets, model
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
     tcls, tbox, indices, anchor_vec = build_targets(model, targets)
     h = model.hyp  # hyperparameters
     arc = model.arc  # # (default, uCE, uBCE) detection architectures
-    red = 'sum'  # Loss reduction (sum or mean)
+    red = 'mean'  # Loss reduction (sum or mean)
 
     # Define criteria
     BCEcls = nn.BCEWithLogitsLoss(pos_weight=ft([h['cls_pw']]), reduction=red)
     BCEobj = nn.BCEWithLogitsLoss(pos_weight=ft([h['obj_pw']]), reduction=red)
     BCE = nn.BCEWithLogitsLoss(reduction=red)
     CE = nn.CrossEntropyLoss(reduction=red)  # weight=model.class_weights
+
+    # class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
+    smooth = False
+    if smooth:
+        e = 0.1  #  class label smoothing epsilon
+        cp, cn = 1.0 - e, e / (model.nc - 0.99)  # class positive and negative labels
+    else:
+        cp, cn = 1.0, 0.0
 
     if 'F' in arc:  # add focal loss
         g = h['fl_gamma']
@@ -399,18 +410,13 @@ def compute_loss(p, targets, model, giou_flag=True):  # predictions, targets, mo
             pbox = torch.cat((pxy, pwh), 1)  # predicted box
             giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
             lbox += (1.0 - giou).sum() if red == 'sum' else (1.0 - giou).mean()  # giou loss
-            tobj[b, a, gj, gi] = giou.detach().type(tobj.dtype) if giou_flag else 1.0
+            tobj[b, a, gj, gi] = (1.0 - model.gr) + model.gr * giou.detach().clamp(0).type(tobj.dtype)  # giou ratio
 
             if 'default' in arc and model.nc > 1:  # cls loss (only if multiple classes)
-                t = torch.zeros_like(ps[:, 5:])  # targets
-                t[range(nb), tcls[i]] = 1.0
+                t = torch.zeros_like(ps[:, 5:]) + cn  # targets
+                t[range(nb), tcls[i]] = cp
                 lcls += BCEcls(ps[:, 5:], t)  # BCE
                 # lcls += CE(ps[:, 5:], tcls[i])  # CE
-
-                # Instance-class weighting (use with reduction='none')
-                # nt = t.sum(0) + 1  # number of targets per class
-                # lcls += (BCEcls(ps[:, 5:], t) / nt).mean() * nt.mean()  # v1
-                # lcls += (BCEcls(ps[:, 5:], t) / nt[tcls[i]].view(-1,1)).mean() * nt.mean()  # v2
 
             # Append targets to text file
             # with open('targets.txt', 'a') as file:
@@ -498,7 +504,7 @@ def build_targets(model, targets):
     return tcls, tbox, indices, av
 
 
-def non_max_suppression(prediction, conf_thres=0.5, iou_thres=0.5, multi_cls=True, classes=None, agnostic=False):
+def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=True, classes=None, agnostic=False):
     """
     Removes detections with lower object confidence score than 'conf_thres'
     Non-Maximum Suppression to further filter detections.
@@ -511,18 +517,19 @@ def non_max_suppression(prediction, conf_thres=0.5, iou_thres=0.5, multi_cls=Tru
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
 
     method = 'vision_batch'
+    batched = 'batch' in method  # run once per image, all classes simultaneously
     nc = prediction[0].shape[1] - 5  # number of classes
-    multi_cls = multi_cls and (nc > 1)  # allow multiple classes per anchor
+    multi_label &= nc > 1  # multiple labels per box
     output = [None] * len(prediction)
     for image_i, pred in enumerate(prediction):
         # Apply conf constraint
         pred = pred[pred[:, 4] > conf_thres]
 
         # Apply width-height constraint
-        pred = pred[(pred[:, 2:4] > min_wh).all(1) & (pred[:, 2:4] < max_wh).all(1)]
+        pred = pred[((pred[:, 2:4] > min_wh) & (pred[:, 2:4] < max_wh)).all(1)]
 
         # If none remain process next image
-        if len(pred) == 0:
+        if not pred.shape[0]:
             continue
 
         # Compute conf
@@ -532,7 +539,7 @@ def non_max_suppression(prediction, conf_thres=0.5, iou_thres=0.5, multi_cls=Tru
         box = xywh2xyxy(pred[:, :4])
 
         # Detections matrix nx6 (xyxy, conf, cls)
-        if multi_cls:
+        if multi_label:
             i, j = (pred[:, 5:] > conf_thres).nonzero().t()
             pred = torch.cat((box[i], pred[i, j + 5].unsqueeze(1), j.float().unsqueeze(1)), 1)
         else:  # best class only
@@ -547,15 +554,27 @@ def non_max_suppression(prediction, conf_thres=0.5, iou_thres=0.5, multi_cls=Tru
         if not torch.isfinite(pred).all():
             pred = pred[torch.isfinite(pred).all(1)]
 
-        # Batched NMS
-        if method == 'vision_batch':
-            c = pred[:, 5] * 0 if agnostic else pred[:, 5]  # class-agnostic NMS
-            output[image_i] = pred[torchvision.ops.boxes.batched_nms(pred[:, :4], pred[:, 4], c, iou_thres)]
+        # If none remain process next image
+        if not pred.shape[0]:
             continue
 
         # Sort by confidence
         if not method.startswith('vision'):
             pred = pred[pred[:, 4].argsort(descending=True)]
+
+        # Batched NMS
+        if batched:
+            c = pred[:, 5] * 0 if agnostic else pred[:, 5]  # class-agnostic NMS
+            boxes, scores = pred[:, :4].clone(), pred[:, 4]
+            if method == 'vision_batch':
+                i = torchvision.ops.boxes.batched_nms(boxes, scores, c, iou_thres)
+            elif method == 'fast_batch':  # FastNMS from https://github.com/dbolya/yolact
+                boxes += c.view(-1, 1) * max_wh
+                iou = box_iou(boxes, boxes).triu_(diagonal=1)  # upper triangular iou matrix
+                i = iou.max(dim=0)[0] < iou_thres
+
+            output[image_i] = pred[i]
+            continue
 
         # All other NMS methods
         det_max = []
@@ -742,28 +761,28 @@ def coco_single_class_labels(path='../coco/labels/train2014/', label_class=43):
             shutil.copyfile(src=img_file, dst='new/images/' + Path(file).name.replace('txt', 'jpg'))  # copy images
 
 
-def kmean_anchors(path='../coco/train2017.txt', n=9, img_size=(320, 640)):
+def kmean_anchors(path='../coco/train2017.txt', n=9, img_size=(608, 608)):
     # from utils.utils import *; _ = kmean_anchors()
     # Produces a list of target kmeans suitable for use in *.cfg files
     from utils.datasets import LoadImagesAndLabels
     thr = 0.20  # IoU threshold
 
-    def print_results(thr, wh, k):
+    def print_results(k):
         k = k[np.argsort(k.prod(1))]  # sort small to large
-        iou = wh_iou(torch.Tensor(wh), torch.Tensor(k))
-        max_iou, min_iou = iou.max(1)[0], iou.min(1)[0]
+        iou = wh_iou(wh, torch.Tensor(k))
+        max_iou = iou.max(1)[0]
         bpr, aat = (max_iou > thr).float().mean(), (iou > thr).float().mean() * n  # best possible recall, anch > thr
         print('%.2f iou_thr: %.3f best possible recall, %.2f anchors > thr' % (thr, bpr, aat))
-        print('kmeans anchors (n=%g, img_size=%s, IoU=%.3f/%.3f/%.3f-min/mean/best): ' %
-              (n, img_size, min_iou.mean(), iou.mean(), max_iou.mean()), end='')
+        print('n=%g, img_size=%s, IoU_all=%.3f/%.3f-mean/best, IoU>thr=%.3f-mean: ' %
+              (n, img_size, iou.mean(), max_iou.mean(), iou[iou > thr].mean()), end='')
         for i, x in enumerate(k):
             print('%i,%i' % (round(x[0]), round(x[1])), end=',  ' if i < len(k) - 1 else '\n')  # use in *.cfg
         return k
 
-    def fitness(thr, wh, k):  # mutation fitness
-        iou = wh_iou(wh, torch.Tensor(k)).max(1)[0]  # max iou
-        bpr = (iou > thr).float().mean()  # best possible recall
-        return iou.mean() * bpr  # product
+    def fitness(k):  # mutation fitness
+        iou = wh_iou(wh, torch.Tensor(k))  # iou
+        max_iou = iou.max(1)[0]
+        return max_iou.mean()  # product
 
     # Get label wh
     wh = []
@@ -773,10 +792,11 @@ def kmean_anchors(path='../coco/train2017.txt', n=9, img_size=(320, 640)):
         wh.append(l[:, 3:5] * (s / s.max()))  # image normalized to letterbox normalized wh
     wh = np.concatenate(wh, 0).repeat(nr, axis=0)  # augment 10x
     wh *= np.random.uniform(img_size[0], img_size[1], size=(wh.shape[0], 1))  # normalized to pixels (multi-scale)
+    wh = wh[(wh > 2.0).all(1)]  # remove below threshold boxes (< 2 pixels wh)
 
     # Darknet yolov3.cfg anchors
     use_darknet = False
-    if use_darknet:
+    if use_darknet and n == 9:
         k = np.array([[10, 13], [16, 30], [33, 23], [30, 61], [62, 45], [59, 119], [116, 90], [156, 198], [373, 326]])
     else:
         # Kmeans calculation
@@ -785,7 +805,8 @@ def kmean_anchors(path='../coco/train2017.txt', n=9, img_size=(320, 640)):
         s = wh.std(0)  # sigmas for whitening
         k, dist = kmeans(wh / s, n, iter=30)  # points, mean distance
         k *= s
-    k = print_results(thr, wh, k)
+    wh = torch.Tensor(wh)
+    k = print_results(k)
 
     # # Plot
     # k, d = [None] * 20, [None] * 20
@@ -794,17 +815,25 @@ def kmean_anchors(path='../coco/train2017.txt', n=9, img_size=(320, 640)):
     # fig, ax = plt.subplots(1, 2, figsize=(14, 7))
     # ax = ax.ravel()
     # ax[0].plot(np.arange(1, 21), np.array(d) ** 2, marker='.')
+    # fig, ax = plt.subplots(1, 2, figsize=(14, 7))  # plot wh
+    # ax[0].hist(wh[wh[:, 0]<100, 0],400)
+    # ax[1].hist(wh[wh[:, 1]<100, 1],400)
+    # fig.tight_layout()
+    # fig.savefig('wh.png', dpi=200)
 
     # Evolve
-    wh = torch.Tensor(wh)
-    f, ng = fitness(thr, wh, k), 1000  # fitness, generations
+    npr = np.random
+    f, sh, ng, mp, s = fitness(k), k.shape, 1000, 0.9, 0.1  # fitness, generations, mutation prob, sigma
     for _ in tqdm(range(ng), desc='Evolving anchors'):
-        kg = (k.copy() * (1 + np.random.random() * np.random.randn(*k.shape) * 0.30)).clip(min=2.0)
-        fg = fitness(thr, wh, kg)
+        v = np.ones(sh)
+        while (v == 1).all():  # mutate until a change occurs (prevent duplicates)
+            v = ((npr.random(sh) < mp) * npr.random() * npr.randn(*sh) * s + 1).clip(0.3, 3.0)  # 98.6, 61.6
+        kg = (k.copy() * v).clip(min=2.0)
+        fg = fitness(kg)
         if fg > f:
             f, k = fg, kg.copy()
-            print_results(thr, wh, k)
-    k = print_results(thr, wh, k)
+            print_results(k)
+    k = print_results(k)
 
     return k
 
@@ -865,7 +894,7 @@ def apply_classifier(x, model, img, im0):
 
 def fitness(x):
     # Returns fitness (for use with results.txt or evolve.txt)
-    w = [0.01, 0.01, 0.75, 0.23]  # weights for [P, R, mAP, F1]@0.5 or [P, R, mAP@0.5:0.95, mAP@0.5]
+    w = [0.0, 0.01, 0.99, 0.00]  # weights for [P, R, mAP, F1]@0.5 or [P, R, mAP@0.5, mAP@0.5:0.95]
     return (x[:, :4] * w).sum(1)
 
 
@@ -904,7 +933,7 @@ def plot_wh_methods():  # from utils.utils import *; plot_wh_methods()
     fig.savefig('comparison.png', dpi=200)
 
 
-def plot_images(imgs, targets, paths=None, fname='images.jpg'):
+def plot_images(imgs, targets, paths=None, fname='images.png'):
     # Plots training images overlaid with targets
     imgs = imgs.cpu().numpy()
     targets = targets.cpu().numpy()
@@ -940,13 +969,13 @@ def plot_test_txt():  # from utils.utils import *; plot_test()
     ax.hist2d(cx, cy, bins=600, cmax=10, cmin=0)
     ax.set_aspect('equal')
     fig.tight_layout()
-    plt.savefig('hist2d.jpg', dpi=300)
+    plt.savefig('hist2d.png', dpi=300)
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
     ax[0].hist(cx, bins=600)
     ax[1].hist(cy, bins=600)
     fig.tight_layout()
-    plt.savefig('hist1d.jpg', dpi=200)
+    plt.savefig('hist1d.png', dpi=200)
 
 
 def plot_targets_txt():  # from utils.utils import *; plot_targets_txt()
@@ -1010,7 +1039,7 @@ def plot_results_overlay(start=0, stop=0):  # from utils.utils import *; plot_re
 
 def plot_results(start=0, stop=0, bucket='', id=()):  # from utils.utils import *; plot_results()
     # Plot training results files 'results*.txt'
-    fig, ax = plt.subplots(2, 5, figsize=(14, 7))
+    fig, ax = plt.subplots(2, 5, figsize=(12, 6))
     ax = ax.ravel()
     s = ['GIoU', 'Objectness', 'Classification', 'Precision', 'Recall',
          'val GIoU', 'val Objectness', 'val Classification', 'mAP@0.5', 'F1']
@@ -1028,7 +1057,7 @@ def plot_results(start=0, stop=0, bucket='', id=()):  # from utils.utils import 
             if i in [0, 1, 2, 5, 6, 7]:
                 y[y == 0] = np.nan  # dont show zero loss values
                 # y /= y[0]  # normalize
-            ax[i].plot(x, y, marker='.', label=Path(f).stem)
+            ax[i].plot(x, y, marker='.', label=Path(f).stem, linewidth=2, markersize=8)
             ax[i].set_title(s[i])
             if i in [5, 6, 7]:  # share train and val loss y axes
                 ax[i].get_shared_y_axes().join(ax[i], ax[i - 5])

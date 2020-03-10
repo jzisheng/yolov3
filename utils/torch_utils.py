@@ -1,6 +1,8 @@
 import os
+import time
 
 import torch
+import torch.backends.cudnn as cudnn
 
 
 def init_seeds(seed=0):
@@ -8,8 +10,8 @@ def init_seeds(seed=0):
 
     # Remove randomness (may be slower on Tesla GPUs) # https://pytorch.org/docs/stable/notes/randomness.html
     if seed == 0:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        cudnn.deterministic = True
+        cudnn.benchmark = False
 
 
 def select_device(device='', apex=False, batch_size=None):
@@ -39,6 +41,11 @@ def select_device(device='', apex=False, batch_size=None):
     return torch.device('cuda:0' if cuda else 'cpu')
 
 
+def time_synchronized():
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    return time.time()
+
+
 def fuse_conv_and_bn(conv, bn):
     # https://tehnokv.com/posts/fusing-batchnorm-and-conv/
     with torch.no_grad():
@@ -61,7 +68,7 @@ def fuse_conv_and_bn(conv, bn):
         else:
             b_conv = torch.zeros(conv.weight.size(0))
         b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
-        fusedconv.bias.copy_(b_conv + b_bn)
+        fusedconv.bias.copy_(torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn)
 
         return fusedconv
 
@@ -70,7 +77,7 @@ def model_info(model, report='summary'):
     # Plots a line-by-line description of a PyTorch model
     n_p = sum(x.numel() for x in model.parameters())  # number parameters
     n_g = sum(x.numel() for x in model.parameters() if x.requires_grad)  # number gradients
-    if report is 'full':
+    if report == 'full':
         print('%5s %40s %9s %12s %20s %10s %10s' % ('layer', 'name', 'gradient', 'parameters', 'shape', 'mu', 'sigma'))
         for i, (name, p) in enumerate(model.named_parameters()):
             name = name.replace('module_list.', '')
@@ -94,74 +101,3 @@ def load_classifier(name='resnet101', n=2):
     model.last_linear.weight = torch.nn.Parameter(torch.zeros(n, filters))
     model.last_linear.out_features = n
     return model
-
-
-from collections import defaultdict
-from torch.optim import Optimizer
-
-
-class Lookahead(Optimizer):
-    def __init__(self, optimizer, k=5, alpha=0.5):
-        self.optimizer = optimizer
-        self.k = k
-        self.alpha = alpha
-        self.param_groups = self.optimizer.param_groups
-        self.state = defaultdict(dict)
-        self.fast_state = self.optimizer.state
-        for group in self.param_groups:
-            group["counter"] = 0
-
-    def update(self, group):
-        for fast in group["params"]:
-            param_state = self.state[fast]
-            if "slow_param" not in param_state:
-                param_state["slow_param"] = torch.zeros_like(fast.data)
-                param_state["slow_param"].copy_(fast.data)
-            slow = param_state["slow_param"]
-            slow += (fast.data - slow) * self.alpha
-            fast.data.copy_(slow)
-
-    def update_lookahead(self):
-        for group in self.param_groups:
-            self.update(group)
-
-    def step(self, closure=None):
-        loss = self.optimizer.step(closure)
-        for group in self.param_groups:
-            if group["counter"] == 0:
-                self.update(group)
-            group["counter"] += 1
-            if group["counter"] >= self.k:
-                group["counter"] = 0
-        return loss
-
-    def state_dict(self):
-        fast_state_dict = self.optimizer.state_dict()
-        slow_state = {
-            (id(k) if isinstance(k, torch.Tensor) else k): v
-            for k, v in self.state.items()
-        }
-        fast_state = fast_state_dict["state"]
-        param_groups = fast_state_dict["param_groups"]
-        return {
-            "fast_state": fast_state,
-            "slow_state": slow_state,
-            "param_groups": param_groups,
-        }
-
-    def load_state_dict(self, state_dict):
-        slow_state_dict = {
-            "state": state_dict["slow_state"],
-            "param_groups": state_dict["param_groups"],
-        }
-        fast_state_dict = {
-            "state": state_dict["fast_state"],
-            "param_groups": state_dict["param_groups"],
-        }
-        super(Lookahead, self).load_state_dict(slow_state_dict)
-        self.optimizer.load_state_dict(fast_state_dict)
-        self.fast_state = self.optimizer.state
-
-    def add_param_group(self, param_group):
-        param_group["counter"] = 0
-        self.optimizer.add_param_group(param_group)
