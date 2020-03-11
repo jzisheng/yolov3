@@ -294,8 +294,8 @@ class DarkNetFormatter():
         if debug == True:
             plotDarknetFmt(c_img,x_center,y_center,ws,hs,c_cls,szx,szy)
             pass
-        result = np.vstack((c_cls,x_center,y_center,ws,hs)).T            
-        # result = np.vstack((c_cls,x_center,y_center,ws,hs,c_ids)).T
+        # result = np.vstack((c_cls,x_center,y_center,ws,hs)).T            
+        result = np.vstack((c_cls,x_center,y_center,ws,hs,c_ids)).T
         result[:,1:] = np.clip(result[:,1:],0.001,0.999)
         assert (result[:, 1:] > 0).all(), "values less than 0"
         assert (result[:, 1:] <= 1).all(),"Values not normalized"
@@ -347,7 +347,7 @@ class DarkNetFormatter():
             # Change chip into darknet format, and save
             result = self.toDarknetFmt(sbox,scls,simg,sid)
             ff_l = "{}labels/{}.txt".format(c_dir,c_name)
-            np.savetxt(ff_l, result, fmt='%i %1.6f %1.6f %1.6f %1.6f')
+            np.savetxt(ff_l, result, fmt='%i %1.6f %1.6f %1.6f %1.6f  %1.6f')
             # Save image to specified dir
             ff_i = "{}images/{}.jpg".format(c_dir,c_name)
             
