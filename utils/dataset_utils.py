@@ -220,13 +220,13 @@ class XviewDataset():
         df.columns = ["grouped cls","og label",'count']
         return df
     
-    def splitTrainTest(self):
+    def splitTrainTest(self,debug=False):
         allGroupedClasses = []
         for a in self.grouped_classes:
             allGroupedClasses.extend(a)
         #allLabelCounts = self.getLabelCounts()
         labelCounts,allLabelCounts = self.getLabelCounts()
-        idxs,numd = self.findBalance(labelCounts[:,1:], 0.8, 0.1)
+        idxs,numd = self.findBalance(labelCounts[:,1:], 0.8, 0.1,debug=debug)
         train_ind, test_ind = idxs
         
         train_tifs = self.indToTifName(labelCounts,train_ind)
@@ -295,8 +295,8 @@ class DarkNetFormatter():
             plotDarknetFmt(c_img,x_center,y_center,ws,hs,c_cls,szx,szy)
         result = np.vstack((c_cls,x_center,y_center,ws,hs)).T
         result[:,1:] = np.clip(result[:,1:],0.001,0.999)
-        assert (result[:, 1:] > 0, "values less than 0")
-        assert(result[:, 1:] <= 1,"Values not normalized")
+        assert((result[:, 1:] > 0), "values less than 0")
+        assert((result[:, 1:] <= 1),"Values not normalized")
         return result
 
     def checkDir(self,filepath):

@@ -101,7 +101,7 @@ def chip_image(img,coords,classes,shape=(300,300),chipImage=False):
 
     Args:
         img: the image to be chipped in array format
-        coords: an (N,4) array of bounding box coordinates for that image
+        coords: an (N,5) array of bounding box coordinates with the last representing ids
         classes: an (N,1) array of classes for each bounding box
         shape: an (W,H) tuple indicating width and height of chips
 
