@@ -263,7 +263,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         with open(path, 'r') as f:
             self.img_files = [x.replace('/', os.sep) for x in f.read().splitlines()  # os-agnostic
                               if os.path.splitext(x)[-1].lower() in img_formats]
-
+            pass
+        
         n = len(self.img_files)
         assert n > 0, 'No images found in %s. See %s' % (path, help_url)
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
@@ -508,6 +509,22 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             l[:, 0] = i  # add target image index for build_targets()
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
 
+
+def load_image_old(self, index):
+    # loads 1 image from dataset, returns img, original hw, resized hw
+    img = self.imgs[index]
+    if img is None:  # not cached
+        img_path = self.img_files[index]
+        img = cv2.imread(img_path)  # BGR
+        assert img is not None, 'Image Not Found ' + img_path
+        h0, w0 = img.shape[:2]  # orig hw
+        r = self.img_size / max(h0, w0)  # resize image to img_size
+        if r < 1 or (self.augment and (r != 1)):  # always resize down, only resize up if training with augmentation
+            interp = cv2.INTER_LINEAR if self.augment else cv2.INTER_AREA  # LINEAR for training, AREA for testing
+            img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
+    else:
+        return self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized
 
 def load_image(self, index):
     # loads 1 image from dataset, returns img, original hw, resized hw

@@ -283,7 +283,7 @@ class DarkNetFormatter():
         plt.show()
         pass
 
-    def toDarknetFmt(self,c_box,c_cls,c_img,debug=False):
+    def toDarknetFmt(self,c_box,c_cls,c_img,c_ids, debug=False):
         szx,szy,_ = c_img.shape
         c_box[:,0],c_box[:,2] = c_box[:,0]/szx,c_box[:,2]/szx
         c_box[:,1],c_box[:,3] = c_box[:,1]/szy,c_box[:,3]/szy
@@ -291,12 +291,14 @@ class DarkNetFormatter():
         ws,hs = (xmax-xmin), (ymax-ymin)
         x_center, y_center = xmin+(ws/2),ymin+(hs/2)
         # Visualize using mpl
-        if debug:
+        if debug == True:
             plotDarknetFmt(c_img,x_center,y_center,ws,hs,c_cls,szx,szy)
-        result = np.vstack((c_cls,x_center,y_center,ws,hs)).T
+            pass
+        result = np.vstack((c_cls,x_center,y_center,ws,hs)).T            
+        # result = np.vstack((c_cls,x_center,y_center,ws,hs,c_ids)).T
         result[:,1:] = np.clip(result[:,1:],0.001,0.999)
-        assert((result[:, 1:] > 0), "values less than 0")
-        assert((result[:, 1:] <= 1),"Values not normalized")
+        assert (result[:, 1:] > 0).all(), "values less than 0"
+        assert (result[:, 1:] <= 1).all(),"Values not normalized"
         return result
 
     def checkDir(self,filepath):
@@ -316,7 +318,8 @@ class DarkNetFormatter():
         resized = cv.resize(blur, dim, interpolation = cv.INTER_AREA)
         return resized
     
-    def parseChip(self,c_img, c_box, c_cls,img_num,c_dir,res_out=30,showImg = False):
+    def parseChip(self,c_img, c_box, c_cls,c_ids,
+                  img_num,c_dir,res_out=30,showImg = False):
         # Parses chips, saves chip image, and also saves corresponding labels
         fnames = []
         
@@ -330,20 +333,19 @@ class DarkNetFormatter():
         
         for c_idx in range(c_img.shape[0]):
             c_name = "{:06}_{:02}".format(int(img_num), c_idx)
-            sbox,scls,simg = \
-                c_box[c_idx],c_cls[c_idx],c_img[c_idx]
+            sbox,scls,simg,sid = \
+                c_box[c_idx],c_cls[c_idx],c_img[c_idx], c_ids[c_idx]
             if showImg:
                 labelled = aug.draw_bboxes(simg,sbox)
                 plt.figure(figsize=(10,10))
                 plt.imshow(labelled)
-                print(c_name)
+                print(c_box[:,4])
                 plt.title(str(c_name)+" "+str(simg.shape))
                 plt.axis('off')
                 break
-
             
             # Change chip into darknet format, and save
-            result = self.toDarknetFmt(sbox,scls,simg)
+            result = self.toDarknetFmt(sbox,scls,simg,sid)
             ff_l = "{}labels/{}.txt".format(c_dir,c_name)
             np.savetxt(ff_l, result, fmt='%i %1.6f %1.6f %1.6f %1.6f')
             # Save image to specified dir
@@ -352,6 +354,7 @@ class DarkNetFormatter():
             Image.fromarray(simg).save(ff_i)
             # Append file name to list
             fnames.append("{}images/{}.jpg".format(c_dir,c_name))
+            break
             pass
         return fnames
     
@@ -375,9 +378,9 @@ class DarkNetFormatter():
                     arr = self.downsampleImage(arr,res_out=res_out)
                     chip_coords = chip_coords*scale
                 # Chip the tif image into tiles
-                c_img, c_box, c_cls = wv.chip_image(img=arr, coords=chip_coords, 
-                                                    classes=chip_classes, shape=shape,
-                                                    chipImage=chipImage)
+                c_img, c_box, c_cls,c_ids  = wv.chip_image(img=arr, coords=chip_coords, 
+                                                           classes=chip_classes, shape=shape,
+                                                           chipImage=chipImage)
                 if showImg:
                     result = []
                     for key in c_cls.keys():
@@ -393,7 +396,8 @@ class DarkNetFormatter():
                     break
                     pass
                 
-                c_fnames = self.parseChip(c_img, c_box, c_cls, img_num, c_dir,res_out)
+                c_fnames = self.parseChip(c_img, c_box, c_cls, c_ids,
+                                          img_num, c_dir,res_out)
                 fnames.extend(c_fnames)
 
             except FileNotFoundError as e:

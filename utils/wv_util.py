@@ -97,7 +97,8 @@ def chip_image(img,coords,classes,shape=(300,300),chipImage=False):
         multiple chips are clipped: each portion that is in a chip is labeled. For example,
         half a building will be labeled if it is cut off in a chip. If there are no boxes,
         the boxes array will be [[0,0,0,0]] and classes [0].
-        Note: This chip_image method is only tested on xView data-- there are some image manipulations that can mess up different images.
+        Note: This chip_image method is only tested on xView data-- 
+        there are some image manipulations that can mess up different images.
 
     Args:
         img: the image to be chipped in array format
@@ -110,7 +111,8 @@ def chip_image(img,coords,classes,shape=(300,300),chipImage=False):
         W and H are the dimensions of the image, and C is the number of color
         channels.  Also returns boxes and classes dictionaries for each corresponding chip.
     """
-
+    assert coords.shape[1]==5 ,"Invalid dim: No unique coord idx labels to the 5th col"
+    
     height,width,_ = img.shape
     if chipImage == False:
         # don't chip image and return original size
@@ -121,7 +123,7 @@ def chip_image(img,coords,classes,shape=(300,300),chipImage=False):
         wn,hn = shape
         w_num,h_num = (int(math.ceil(width/wn)),int(math.ceil(height/hn)))
         pass
-
+    
     w_new,h_new = wn*(w_num),hn*(h_num)
     # Make new image with padded edges
     temp_img = np.zeros((h_new,w_new,3))
@@ -132,6 +134,7 @@ def chip_image(img,coords,classes,shape=(300,300),chipImage=False):
     
     total_boxes = {}
     total_classes = {}
+    total_ids = {}
     
     k = 0
     for i in range(w_num):
@@ -147,17 +150,21 @@ def chip_image(img,coords,classes,shape=(300,300),chipImage=False):
                                           np.clip(outn[:,2]-(wn*i),0,wn),
                                           np.clip(outn[:,3]-(hn*j),0,hn))))
             box_classes = classes[x][y]
+            bbox_ids = coords[x][y][:,4]
             
             if out.shape[0] != 0:
                 total_boxes[k] = out
                 total_classes[k] = box_classes
+                total_ids[k] = bbox_ids
             else:
                 total_boxes[k] = np.array([[0,0,0,0]])
                 total_classes[k] = np.array([0])
+                total_ids[k] = np.array([0])                
             
             chip = img[hn*j:hn*(j+1),wn*i:wn*(i+1),:3]
             images[k]=chip
             
             k = k + 1
+            pass
     
-    return images.astype(np.uint8),total_boxes,total_classes
+    return images.astype(np.uint8),total_boxes,total_classes,total_ids

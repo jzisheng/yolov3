@@ -172,14 +172,14 @@ def draw_bboxes(img,boxes):
     Output:
         Image with drawn bounding boxes
     """
+
     source = Image.fromarray(img)
     draw = ImageDraw.Draw(source)
     w2,h2 = (img.shape[0],img.shape[1])
 
     idx = 0
-
     for b in boxes:
-        xmin,ymin,xmax,ymax = b
+        xmin,ymin,xmax,ymax,_ = b
         
         for j in range(2):
             draw.rectangle(((xmin+j, ymin+j), (xmax+j, ymax+j)), outline="red")
