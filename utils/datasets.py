@@ -318,6 +318,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Preload labels (required for weighted CE training)
         self.imgs = [None] * n
         self.labels = [None] * n
+
         if cache_labels or image_weights:  # cache labels for faster training
             self.labels = [np.zeros((0, 5))] * n
             extract_bounding_boxes = False
@@ -325,19 +326,22 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             pbar = tqdm(self.label_files, desc='Caching labels')
 
             nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
+
             for i, file in enumerate(pbar):
 
                 try:
                     with open(file, 'r') as f:
                         l = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
+
                 except:
                     nm += 1  # print('missing labels for image %s' % self.img_files[i])  # file missing
                     continue
-
                 if l.shape[0]:
-                    assert l.shape[1] == 5, '> 5 label columns: %s' % file
+                    # IMPLEMENTING LABEL IDs
+                    # assert l.shape[1] == 5, '> 5 label columns: %s' % file
+                    assert l.shape[1] == 5, 'missing label id' % file                    
                     assert (l >= 0).all(), 'negative labels: %s' % file
-                    assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
+                    assert (l[:, 1:5] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
                     if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows
                         nd += 1  # print('WARNING: duplicate rows in %s' % self.label_files[i])  # duplicate rows
                     if single_cls:
@@ -493,6 +497,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 2] = 1 - labels[:, 2]
 
         labels_out = torch.zeros((nL, 6))
+        # Store label indexes
+        #labelIdxs = labels[:,5]
+        # Store labels
+        #labels = labels[:,:5]
+        
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
 
@@ -582,6 +591,7 @@ def load_mosaic(self, index):
 
         # Load labels
         label_path = self.label_files[index]
+        
         if os.path.isfile(label_path):
             x = self.labels[index]
             if x is None:  # labels not preloaded
