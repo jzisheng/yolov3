@@ -8,7 +8,6 @@ from models import *
 from utils.datasets import *
 from utils.utils import *
 
-
 def my_test(cfg,
          data,
          weights=None,
@@ -47,7 +46,7 @@ def my_test(cfg,
     iouv = torch.linspace(0.25, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     iouv = iouv[0].view(1)  # comment for mAP@0.5:0.95
     niou = iouv.numel()
-
+    
     # Dataloader
     if dataloader is None:
         dataset = LoadImagesAndLabels(path, img_size, batch_size, rect=True)
@@ -62,18 +61,23 @@ def my_test(cfg,
     seen = 0
     model.eval()
     coco91class = coco80_to_coco91_class()
+    
     s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@0.25', 'F1')
     p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0.
+
     loss = torch.zeros(3)
-    jdict, stats, ap, ap_class = [], [], [], []
+    jdict, stats, ap, ap_class, allLabelIds = [], [], [], [],[]
+
     for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+        # Extract label ids for this batch
         if(batch_i>50):
             break
+        
         imgs = imgs.to(device).float() / 255.0  # uint8 to float32, 0 - 255 to 0.0 - 1.0
         targets = targets.to(device)
-        _, _, height, width = imgs.shape  # batch size, channels, height, width
-
-        # Plot images with bounding boxes
+        _, _, height, width = imgs.shape # batch size, channels, height, width
+        
+        # Plot images with bounding boxe
         if batch_i == 0 and not os.path.exists('test_batch0.png'):
             plot_images(imgs=imgs, targets=targets, paths=paths, fname='test_batch0.png')
 
@@ -89,24 +93,37 @@ def my_test(cfg,
 
             # Run NMS
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres)
+            pass
+        
 
         # Statistics per image
         for si, pred in enumerate(output):
-            labels = targets[targets[:, 0] == si, 1:]
+            mask = (targets[:, 0] == si)
+            labels = targets[mask, 1:] # get labels for category
+            
+            """            
+            print("="*10)
+            print(targets[mask,:].shape)
+            print(targets[mask,1])
+            print(targets[mask,6])
+            """
             nl = len(labels)
-            tcls = labels[:, 0].tolist() if nl else []  # target class
+            tids = labels[:,5].tolist() if nl else [] # target id
+            tcls = labels[:,0].tolist() if nl else []  # target class
             seen += 1
-
+            
             if pred is None:
                 if nl:
                     stats.append((torch.zeros(0, niou, dtype=torch.bool),
-                                  torch.Tensor(), torch.Tensor(), tcls))
+                                  torch.Tensor(), torch.Tensor(), tcls,tids))
+                    allLabelIds.append([-1])
                 continue
-
+            
+            
             # Append to text file
             # with open('test.txt', 'a') as file:
             #    [file.write('%11.5g' * 7 % tuple(x) + '\n') for x in pred]
-
+            
             # Clip boxes to image bounds
             clip_coords(pred, (height, width))
 
@@ -130,39 +147,76 @@ def my_test(cfg,
 
             # Assign all predictions as incorrect
             correct = torch.zeros(len(pred), niou, dtype=torch.bool)
+            label_ids = torch.zeros(len(pred), niou, dtype=int)
+            
             if nl:
                 detected = []  # target indices
-                tcls_tensor = labels[:, 0]
-
+                detectedFracs = {}
+                detectedIds = [] # target unique ids
+                
+                tcls_tensor = labels[:, (0,5)]
                 # target boxes
                 tbox = \
-                    xywh2xyxy(labels[:, 1:5]) * torch.Tensor([width, height, width, height]).to(device)
-
+                    xywh2xyxy(labels[:, 1:5]) * torch.Tensor([width, height,
+                                                              width, height]).to(device)
+                
                 # Per target class
                 for cls in torch.unique(tcls_tensor):
-                    ti = (cls == tcls_tensor).nonzero().view(-1)  # prediction indices
+                    mask = (cls == tcls_tensor[:,0])
+                    ti = mask.nonzero().view(-1)  # prediction indices
+                    ids= tcls_tensor[mask,1].view(-1) # class ids
                     pi = (cls == pred[:, 5]).nonzero().view(-1)  # target indices
+
+                    print("\n"+"="*10)
+                    print(pred[:,:4].shape)
+                    print("="*10)
+                    
                     # Search for detections
                     if len(pi):
                         # Prediction to target ious
-                        ious, i = box_iou(pred[pi, :4], tbox[ti]).max(1)  # best ious, indices
-                        # Append detections
+                        ious,inter,union = box_iou(pred[pi, :4], tbox[ti])
+                        ious, i = ious.max(1)  # best ious rowwise, and idx
+                        
+                        # Append detections, if greater than IoU threshold
+                        for k in (ious > 0.1).nonzero():
+                            rowIdx = i[k] # best iou by column
+                            did = tids[rowIdx]
+                            # append target id
+                            if(did not in detectedIds):
+                                detectedIds.append(did)
+                                pass
+                            elif(did in detectedIds):
+                                print("{} / {}".format(inter[rowIdx],union[rowIdx]))
+                                pass
+                            pass
+                        # Now int
                         for j in (ious > iouv[0]).nonzero():
-                            d = ti[i[j]]  # detected target
+                            d = ti[i[j]]  # detected targets
                             if d not in detected:
-                                detected.append(d)
-                                correct[pi[j]] = (ious[j] > iouv).cpu()  # iou_thres is 1xn
+                                detected.append(d) # append detected target
+                                # Mask of detections over thresohld(bool)
+                                mask = (ious[j] > iouv).cpu()
+                                correct[pi[j]] = mask.cpu()  # iou_thres is 1xn
+                                # Save target id
+                                did = tids[i[j]]
+                                label_ids[pi[j]] = did
                                 pass
                             pass
                         pass
+                    pass
+                pass
+
             # Append statistics (correct, conf, pcls, tcls)
-            stats.append((correct, pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+            stat = (correct, pred[:, 4].cpu(), pred[:, 5].cpu(),tcls)
+            stats.append(stat)
             pass
+        break
         pass
-
-
+    
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+    # allLabelIds = [[np.concatenate(x, 0) for x in zip(*allLabelIds)] ]
+
     result = stats
     if len(stats):
         p, r, ap, f1, ap_class = ap_per_class(*stats)
@@ -199,9 +253,18 @@ def my_test(cfg,
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
     return result
+
+stats = my_test(cfg='cfg/yolov3-spp.cfg',
+                data='/data/zjc4/chipped-30/xview_data.txt',
+                weights='weights/best-30.pt',
+                batch_size=32,
+                img_size=416,
+                conf_thres=0.001,
+                iou_thres=0.25,
+                save_json=True)
     
     
-def my_ap_per_class(tp, conf, pred_cls, target_cls):
+def my_ap_per_class(tp, conf, pred_cls, target_cls, label_ids):
     """ Compute the average precision, given the recall and precision curves.
     Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
     # Arguments
@@ -209,6 +272,7 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls):
         conf:  Objectness value from 0-1 (nparray).
         pred_cls: Predicted object classes (nparray).
         target_cls: True object classes (nparray).
+        label_ids: Label ids of the targets (nparray)
     # Returns
         The average precision as computed in py-faster-rcnn.
     """
@@ -409,11 +473,12 @@ def test(cfg,
                 for cls in torch.unique(tcls_tensor):
                     ti = (cls == tcls_tensor).nonzero().view(-1)  # prediction indices
                     pi = (cls == pred[:, 5]).nonzero().view(-1)  # target indices
-
+                    
                     # Search for detections
                     if pi.shape[0]:
                         # Prediction to target ious
-                        ious, i = box_iou(pred[pi, :4], tbox[ti]).max(1)  # best ious, indices
+                        ious,_,_= box_iou(pred[pi, :4], tbox[ti])
+                        ious, i = ious.max(1)  # best ious, indices
 
                         # Append detections
                         for j in (ious > iouv[0]).nonzero():
@@ -470,7 +535,7 @@ def test(cfg,
         cocoDt = cocoGt.loadRes('results.json')  # initialize COCO pred api
 
         cocoEval = COCOeval(cocoGt, cocoDt, 'bbox')
-        cocoEval.params.imgIds = imgIds  # [:32]  # only evaluate these images
+        cocoEval.params.imgIds = imgIds  # [:32]  # only evaluate these images 
         cocoEval.evaluate()
         cocoEval.accumulate()
         cocoEval.summarize()
@@ -481,6 +546,9 @@ def test(cfg,
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
     return (mp, mr, map, mf1, *(loss.cpu() / len(dataloader)).tolist()), maps
+
+
+
 
 
 if __name__ == '__main__':

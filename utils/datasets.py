@@ -263,8 +263,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         with open(path, 'r') as f:
             self.img_files = [x.replace('/', os.sep) for x in f.read().splitlines()  # os-agnostic
                               if os.path.splitext(x)[-1].lower() in img_formats]
-            pass
-        
+
         n = len(self.img_files)
         assert n > 0, 'No images found in %s. See %s' % (path, help_url)
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
@@ -277,6 +276,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
+        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
 
         # Define labels
         self.label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt')
@@ -318,30 +318,24 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Preload labels (required for weighted CE training)
         self.imgs = [None] * n
         self.labels = [None] * n
-
         if cache_labels or image_weights:  # cache labels for faster training
             self.labels = [np.zeros((0, 5))] * n
             extract_bounding_boxes = False
             create_datasubset = False
             pbar = tqdm(self.label_files, desc='Caching labels')
-
             nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
-
             for i, file in enumerate(pbar):
-
                 try:
                     with open(file, 'r') as f:
                         l = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
-
                 except:
                     nm += 1  # print('missing labels for image %s' % self.img_files[i])  # file missing
                     continue
+
                 if l.shape[0]:
-                    # IMPLEMENTING LABEL IDs
-                    # assert l.shape[1] == 5, '> 5 label columns: %s' % file
-                    assert l.shape[1] == 5, 'missing label id' % file                    
+                    assert l.shape[1] == 6, '> 6 label columns: %s' % file
                     assert (l >= 0).all(), 'negative labels: %s' % file
-                    assert (l[:, 1:5] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
+                    assert (l[:, 1:4] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
                     if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows
                         nd += 1  # print('WARNING: duplicate rows in %s' % self.label_files[i])  # duplicate rows
                     if single_cls:
@@ -385,7 +379,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
                 pbar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
                     nf, nm, ne, nd, n)
-
             assert nf > 0, 'No labels found. See %s' % help_url
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
@@ -425,8 +418,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         label_path = self.label_files[index]
 
         hyp = self.hyp
-        mosaic = True and self.augment  # load 4 images at a time into a mosaic (only during training)
-        if mosaic:
+        if self.mosaic:
             # Load mosaic
             img, labels = load_mosaic(self, index)
             shapes = None
@@ -447,7 +439,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if x is None:  # labels not preloaded
                     with open(label_path, 'r') as f:
                         x = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
-
                 if x.size > 0:
                     # Normalized xywh to pixel xyxy format
                     labels = x.copy()
@@ -458,7 +449,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         if self.augment:
             # Augment imagespace
-            if not mosaic:
+            if not self.mosaic:
                 img, labels = random_affine(img, labels,
                                             degrees=hyp['degrees'],
                                             translate=hyp['translate'],
@@ -496,14 +487,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if nL:
                     labels[:, 2] = 1 - labels[:, 2]
 
-        labels_out = torch.zeros((nL, 6))
-        # Store label indexes
-        #labelIdxs = labels[:,5]
-        # Store labels
-        #labels = labels[:,:5]
-        
+        labels_out = torch.zeros((nL, 7))
         if nL:
-            labels_out[:, 1:] = torch.from_numpy(labels)
+            t_labels =  torch.from_numpy(labels)
+            labels_out[:, 1:] = t_labels
 
         # Convert
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
