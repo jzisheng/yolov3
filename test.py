@@ -166,15 +166,12 @@ def my_test(cfg,
                     ti = mask.nonzero().view(-1)  # prediction indices
                     ids= tcls_tensor[mask,1].view(-1) # class ids
                     pi = (cls == pred[:, 5]).nonzero().view(-1)  # target indices
-
-                    print("\n"+"="*10)
-                    print(pred[:,:4].shape)
-                    print("="*10)
                     
                     # Search for detections
                     if len(pi):
                         # Prediction to target ious
                         ious,inter,union = box_iou(pred[pi, :4], tbox[ti])
+                        ious_ = ious
                         ious, i = ious.max(1)  # best ious rowwise, and idx
                         
                         # Append detections, if greater than IoU threshold
@@ -186,20 +183,29 @@ def my_test(cfg,
                                 detectedIds.append(did)
                                 pass
                             elif(did in detectedIds):
-                                print("{} / {}".format(inter[rowIdx],union[rowIdx]))
+                                # print("{} / {}".format(inter[rowIdx],union[rowIdx]))
                                 pass
                             pass
                         # Now int
+                        
+                        print("="*3)
+                        print(ious_.shape)
+                        print((ious).shape)
+                        # Matrix (Num Predictions, Num GTs)
+                        # first iterate through predictions
                         for j in (ious > iouv[0]).nonzero():
                             d = ti[i[j]]  # detected targets
+                            
                             if d not in detected:
                                 detected.append(d) # append detected target
                                 # Mask of detections over thresohld(bool)
                                 mask = (ious[j] > iouv).cpu()
                                 correct[pi[j]] = mask.cpu()  # iou_thres is 1xn
-                                # Save target id
+                                
+                                # Save target idx
                                 did = tids[i[j]]
                                 label_ids[pi[j]] = did
+                                
                                 pass
                             pass
                         pass
