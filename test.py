@@ -7,6 +7,82 @@ from torch.utils.data import DataLoader
 from models import *
 from utils.datasets import *
 from utils.utils import *
+def my_ap_per_class(tp, conf, pred_cls, target_cls):
+    """ Compute the average precision, given the recall and precision curves.
+    Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
+    # Arguments
+        tp:    True positives (nparray, nx1 or nx10).
+        conf:  Objectness value from 0-1 (nparray).
+        pred_cls: Predicted object classes (nparray).
+        target_cls: True object classes (nparray).
+        label_ids: Label ids of the targets (nparray)
+    # Returns
+        The average precision as computed in py-faster-rcnn.
+    """
+    labels = ["buildings" ,"small aircraft", 
+          "large aircraft","vehicles","bus","boat"]
+
+    # Sort by objectness
+    i = np.argsort(-conf)
+    tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
+
+    # Find unique classes
+    unique_classes = np.unique(target_cls)
+    # Create Precision-Recall curve and compute AP for each class
+    # number class, number iou thresholds (i.e. 10 for mAP0.5...0.95)
+    s = [len(unique_classes), tp.shape[1]]  
+    ap, p, r = np.zeros(s), np.zeros(s), np.zeros(s)
+    plt.figure(dpi=80,figsize=(5,5))
+    print("{:15},{:10},{:10},{:10},{:10},{:10}".format("label","    n_gt","  n_preds",
+                                                 "    tp","     fp","  mAP@0.25"))
+
+    
+    for ci, c in enumerate(unique_classes):
+
+        i = pred_cls == c
+        n_gt = (target_cls == c).sum()  # Number of ground truth objects
+        n_p = i.sum()  # Number of predicted objects
+        if n_p == 0 or n_gt == 0:
+            continue
+        else:
+            # Accumulate FPs and TPs
+            fpc = (1 - tp[i]).cumsum(0)
+            tpc = tp[i].cumsum(0)
+            
+            tp_sum = tp[i].sum(0)
+            fp_sum = (1 - tp[i]).sum(0)
+            print("{:15},{:10},{:10},{:10},{:10},{:10}".format(labels[int(c)],n_gt,len(tp[i]),
+                                                   int(tp_sum),int(fp_sum), str(tp_sum/(tp_sum+fp_sum) ) ))
+            
+            # Recall
+            recall = tpc / (n_gt + 1e-16)  # recall curve
+            r[ci] = recall[-1]
+            # Precision
+            precision = tpc / (tpc + fpc)  # precision curve
+            p[ci] = precision[-1]
+            
+            # AP from recall-precision curve
+            for j in range(tp.shape[1]):
+                ap[ci, j] = compute_ap(recall[:, j], precision[:, j])
+            # Plot
+            
+            plt.plot(recall,precision,label=labels[int(c)])
+            plt.xlabel('Recall')
+            plt.ylabel('Precision')
+            plt.title("model performance")
+            plt.xlim(0,1)
+            plt.xlim(0,1)
+            pass
+        pass
+    plt.legend()
+    plt.show()
+
+
+    # Compute F1 score (harmonic mean of precision and recall)
+    f1 = 2 * p * r / (p + r + 1e-16)
+
+    return p, r, ap, f1, unique_classes.astype('int32')
+
 
 def my_test(cfg,
          data,
@@ -43,7 +119,7 @@ def my_test(cfg,
     #path = data['test']  # path to test images
     names = load_classes(data['names'])  # class names
     #iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
-    iouv = torch.linspace(0.25, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
+    iouv = torch.linspace(0.2, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     iouv = iouv[0].view(1)  # comment for mAP@0.5:0.95
     niou = iouv.numel()
     
@@ -68,7 +144,12 @@ def my_test(cfg,
     loss = torch.zeros(3)
     jdict, stats, ap, ap_class, allLabelIds = [], [], [], [],[]
 
+    interDict = {}
+    denomDict = {}
+                        
+
     for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+        
         # Extract label ids for this batch
         if(batch_i>50):
             break
@@ -81,7 +162,7 @@ def my_test(cfg,
         if batch_i == 0 and not os.path.exists('test_batch0.png'):
             plot_images(imgs=imgs, targets=targets, paths=paths, fname='test_batch0.png')
 
-
+        
         # Disable gradients
         with torch.no_grad():
             # Run model
@@ -118,8 +199,7 @@ def my_test(cfg,
                                   torch.Tensor(), torch.Tensor(), tcls,tids))
                     allLabelIds.append([-1])
                 continue
-            
-            
+                        
             # Append to text file
             # with open('test.txt', 'a') as file:
             #    [file.write('%11.5g' * 7 % tuple(x) + '\n') for x in pred]
@@ -167,6 +247,7 @@ def my_test(cfg,
                     ids= tcls_tensor[mask,1].view(-1) # class ids
                     pi = (cls == pred[:, 5]).nonzero().view(-1)  # target indices
                     
+                    
                     # Search for detections
                     if len(pi):
                         # Prediction to target ious
@@ -174,10 +255,17 @@ def my_test(cfg,
                         ious_ = ious
                         ious, i = ious.max(1)  # best ious rowwise, and idx
                         
-                        # Append detections, if greater than IoU threshold
-                        for k in (ious > 0.1).nonzero():
+                        for k in(ious > 0.1).nonzero():
                             rowIdx = i[k] # best iou by column
                             did = tids[rowIdx]
+                            print(did)
+                            
+                            numerator = inter[k,i[k]]
+                            denom = union[k,i[k]]
+                            
+                            interDict[did] = interDict.get(did,0)+numerator
+                            denomDict[did] = denomDict.get(did,0)+denom
+                            
                             # append target id
                             if(did not in detectedIds):
                                 detectedIds.append(did)
@@ -188,14 +276,10 @@ def my_test(cfg,
                             pass
                         # Now int
                         
-                        print("="*3)
-                        print(ious_.shape)
-                        print((ious).shape)
                         # Matrix (Num Predictions, Num GTs)
                         # first iterate through predictions
                         for j in (ious > iouv[0]).nonzero():
                             d = ti[i[j]]  # detected targets
-                            
                             if d not in detected:
                                 detected.append(d) # append detected target
                                 # Mask of detections over thresohld(bool)
@@ -205,9 +289,11 @@ def my_test(cfg,
                                 # Save target idx
                                 did = tids[i[j]]
                                 label_ids[pi[j]] = did
-                                
+
+
                                 pass
                             pass
+                        # print(label_ids.shape)
                         pass
                     pass
                 pass
@@ -216,16 +302,17 @@ def my_test(cfg,
             stat = (correct, pred[:, 4].cpu(), pred[:, 5].cpu(),tcls)
             stats.append(stat)
             pass
-        break
         pass
-    
+
+
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     # allLabelIds = [[np.concatenate(x, 0) for x in zip(*allLabelIds)] ]
-
+    
     result = stats
     if len(stats):
-        p, r, ap, f1, ap_class = ap_per_class(*stats)
+        p, r, ap, f1, ap_class = my_ap_per_class(*stats)
+
         if niou > 1:
             p, r, ap, f1 = p[:, 0], r[:, 0], ap.mean(1), ap[:, 0]  # [P, R, AP@0.5:0.95, AP@0.5]
         mp, mr, map, mf1 = p.mean(), r.mean(), ap.mean(), f1.mean()
@@ -270,79 +357,6 @@ stats = my_test(cfg='cfg/yolov3-spp.cfg',
                 save_json=True)
     
     
-def my_ap_per_class(tp, conf, pred_cls, target_cls, label_ids):
-    """ Compute the average precision, given the recall and precision curves.
-    Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
-    # Arguments
-        tp:    True positives (nparray, nx1 or nx10).
-        conf:  Objectness value from 0-1 (nparray).
-        pred_cls: Predicted object classes (nparray).
-        target_cls: True object classes (nparray).
-        label_ids: Label ids of the targets (nparray)
-    # Returns
-        The average precision as computed in py-faster-rcnn.
-    """
-    labels = ["buildings" ,"small aircraft", 
-          "large aircraft","vehicles","bus","boat"]
-
-    # Sort by objectness
-    i = np.argsort(-conf)
-    tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
-
-    # Find unique classes
-    unique_classes = np.unique(target_cls)
-    # Create Precision-Recall curve and compute AP for each class
-    # number class, number iou thresholds (i.e. 10 for mAP0.5...0.95)
-    s = [len(unique_classes), tp.shape[1]]  
-    ap, p, r = np.zeros(s), np.zeros(s), np.zeros(s)
-    plt.figure(dpi=80,figsize=(5,5))
-    print("{:15},{:10},{:10},{:10},{:10},{:10}".format("label","    n_gt","  n_preds",
-                                                 "    tp","     fp","  mAP@0.25"))
-    for ci, c in enumerate(unique_classes):
-        i = pred_cls == c
-        n_gt = (target_cls == c).sum()  # Number of ground truth objects
-        n_p = i.sum()  # Number of predicted objects
-        if n_p == 0 or n_gt == 0:
-            continue
-        else:
-            # Accumulate FPs and TPs
-            fpc = (1 - tp[i]).cumsum(0)
-            tpc = tp[i].cumsum(0)
-            
-            
-            tp_sum = tp[i].sum(0)
-            fp_sum = (1 - tp[i]).sum(0)
-            print("{:15},{:10},{:10},{:10},{:10},{:10}".format(labels[int(c)],n_gt,len(tp[i]),
-                                                   int(tp_sum),int(fp_sum), str(tp_sum/(tp_sum+fp_sum) ) ))
-            
-            # Recall
-            recall = tpc / (n_gt + 1e-16)  # recall curve
-            r[ci] = recall[-1]
-            # Precision
-            precision = tpc / (tpc + fpc)  # precision curve
-            p[ci] = precision[-1]
-            
-            # AP from recall-precision curve
-            for j in range(tp.shape[1]):
-                ap[ci, j] = compute_ap(recall[:, j], precision[:, j])
-            # Plot
-
-            plt.plot(recall,precision,label=labels[int(c)])
-            plt.xlabel('Recall')
-            plt.ylabel('Precision')
-            plt.title("model performance")
-            plt.xlim(0,1)
-            plt.xlim(0,1)
-            pass
-        pass
-    plt.legend()
-    plt.show()
-
-
-    # Compute F1 score (harmonic mean of precision and recall)
-    f1 = 2 * p * r / (p + r + 1e-16)
-
-    return p, r, ap, f1, unique_classes.astype('int32')
 
 def test(cfg,
          data,
