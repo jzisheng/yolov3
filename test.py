@@ -155,11 +155,8 @@ def my_test(cfg,
     interDict = {}
     unionDict = {}
     d_ids = {}
-
-
     
     for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
-        toRemove = []  # keep track of correctly detected preds, and remove them
         imgs = imgs.to(device).float() / 255.0  # uint8 to float32, 0 - 255 to 0.0 - 1.0
         targets = targets.to(device)
         _, _, height, width = imgs.shape # batch size, channels, height, width
@@ -182,9 +179,13 @@ def my_test(cfg,
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres)
             pass
         
-        
+
         # Statistics per image
         for si, pred in enumerate(output):
+            # keep track of correctly detected targets in image, and remove
+            toRemove = []
+            toRemoveGt = []
+            
             mask = (targets[:, 0] == si)
             labels = targets[mask, 1:] # get labels for category
             
@@ -238,16 +239,12 @@ def my_test(cfg,
                 tbox = \
                     xywh2xyxy(labels[:, 1:5]) * torch.Tensor([width, height,
                                                               width, height]).to(device)
-                # print("=== {} {} ====".format(pred.shape,targets.shape))
-                # d_ids[did] = (k, i[k], interDict[did],unionDict[did])
-
                 # Per target class
                 for cls in torch.unique(tcls_tensor):
                     mask = (cls == tcls_tensor[:,0])
                     ti = mask.nonzero().view(-1)  # prediction indices
                     ids= tcls_tensor[mask,1].view(-1) # class ids
-                    pi = (cls == pred[:, 5]).nonzero().view(-1) #xtarget indices
-                    
+                    pi = (cls == pred[:, 5]).nonzero().view(-1) #target indices
                     # Search for detections
                     if len(pi):
                         # Prediction to target ious
@@ -281,8 +278,9 @@ def my_test(cfg,
                                     pass
                                 elif did in detectedIds:
                                     # GT Target already detected, check cumulative iou
-                                    (_, i_k, _ ,_ ) = d_ids[did]
-                                    toRemove.append(i_k)
+                                    (k_, i_k, _ ,_ ) = d_ids[did]
+                                    toRemove.append(k_)
+                                    toRemoveGt.append(i_k)                                    
                                     ious[k] = interDict[did]/unionDict[did]
                                     mask = (ious[k] > iouv).cpu()
                                     pass                    
@@ -291,37 +289,22 @@ def my_test(cfg,
                                 # print("{} {} -- {}".format(k,i[k],ious_.shape))
                                 pass
                             pass
-                        '''
-                        # Matrix (Num Predictions, Num GTs)
-                        # first iterate through predictions
-                        for j in (ious > iouv[0]).nonzero():
-                            rowIdx = i[j]                            
-                            d = ti[rowIdx]  # detected targets
-                            did = tids[rowIdx]
-                            inter[rowIdx]
-                            union[rowIdx]
-
-                            # Save target idx
-                            did = tids[rowIdx]
-                            label_ids[pi[j]] = did
-                            
-                            if d not in detected:
-                                detected.append(d) # append detected target
-                                # Mask of detections over thresohld(bool)
-                                mask = (ious[j] > iouv).cpu()
-                                correct[pi[j]] = mask.cpu()  # iou_thres is 1xn
-                                pass
-                            pass
-                        '''
                         pass
                     pass
                 pass
 
-            # print(correct.shape)
-            print("===")
-            print(toRemove)
+            a = np.arange(len(correct))
+            b = torch.tensor(toRemove).data.numpy()
+            a = np.delete(a,b)
+            
+            a_gt = np.arange(len(tcls))
+            b_gt = torch.tensor(toRemoveGt).data.numpy()
+            a_gt = np.delete(a_gt,b_gt)
+            
             # Append statistics (correct, conf, pcls, tcls,tids)
-            stat = (correct, pred[:, 4].cpu(), pred[:, 5].cpu(),tcls,tids)
+            #stat = (correct, pred[:, 4].cpu(), pred[:, 5].cpu(),tcls,tids)
+            stat = (correct[a], pred[a, 4].cpu(), pred[a, 5].cpu(),
+                    np.array(tcls)[a_gt], np.array(tids)[a_gt])
             stats.append(stat)
             pass
         pass

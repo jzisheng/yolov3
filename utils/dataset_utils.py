@@ -347,7 +347,7 @@ class DarkNetFormatter():
             # Change chip into darknet format, and save
             result = self.toDarknetFmt(sbox,scls,simg,sid)
             ff_l = "{}labels/{}.txt".format(c_dir,c_name)
-            np.savetxt(ff_l, result, fmt='%i %1.6f %1.6f %1.6f %1.6f%i')
+            np.savetxt(ff_l, result, fmt='%i %1.6f %1.6f %1.6f %1.6f %i')
             # Save image to specified dir
             ff_i = "{}images/{}.jpg".format(c_dir,c_name)
             
