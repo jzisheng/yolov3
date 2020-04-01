@@ -21,6 +21,9 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls,target_ids):
     # Returns
         The average precision as computed in py-faster-rcnn.
     """
+
+    _ ,tMask = np.unique(target_ids, return_index=True)
+    target_cls, target_ids = target_cls[tMask],target_ids[tMask]
     
     labels = ["buildings" ,"small aircraft", 
           "large aircraft","vehicles","bus","boat"]
@@ -42,7 +45,8 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls,target_ids):
                                                  "    tp","     fp","  mAP@0.25"))
     for ci, c in enumerate(unique_classes):
         mask = (target_cls == c)
-        
+        print("=====")
+        print(len(np.unique(target_ids[mask])))
         i = pred_cls == c
         n_gt_mask = (target_cls == c)  # Number of ground truth objects
         n_gt = (target_cls == c).sum()  # Number of ground truth objects
@@ -239,6 +243,7 @@ def my_test(cfg,
                 tbox = \
                     xywh2xyxy(labels[:, 1:5]) * torch.Tensor([width, height,
                                                               width, height]).to(device)
+                
                 # Per target class
                 for cls in torch.unique(tcls_tensor):
                     mask = (cls == tcls_tensor[:,0])
@@ -251,13 +256,14 @@ def my_test(cfg,
                         ious,inter,union = box_iou(pred[pi, :4], tbox[ti])
                         ious_ = ious
                         ious, i = ious.max(1)  # best ious rowwise, and idx
-                        for k in(ious <= 0.1).nonzero():
+                        #print(ious)
+                        for k in(ious <= 0.25).nonzero():
                             rowIdx = i[k] # best iou by column
                             did = tids[rowIdx]                            
                             d_ids[did] = (k, i[k], 0,0)
                             pass
                         
-                        for k in(ious > 0.1).nonzero():
+                        for k in(ious > 0.25).nonzero():
                             rowIdx = i[k] # best iou by column
                             did = tids[rowIdx]
 
@@ -297,17 +303,14 @@ def my_test(cfg,
             b = torch.tensor(toRemove).data.numpy()
             a = np.delete(a,b)
             
-            a_gt = np.arange(len(tcls))
-            b_gt = torch.tensor(toRemoveGt).data.numpy()
-            a_gt = np.delete(a_gt,b_gt)
-            
             # Append statistics (correct, conf, pcls, tcls,tids)
-            #stat = (correct, pred[:, 4].cpu(), pred[:, 5].cpu(),tcls,tids)
+            stat = (correct, pred[:, 4].cpu(), pred[:, 5].cpu(),tcls,tids)
             stat = (correct[a], pred[a, 4].cpu(), pred[a, 5].cpu(),
-                    np.array(tcls)[a_gt], np.array(tids)[a_gt])
+                    np.array(tcls), np.array(tids))
             stats.append(stat)
             pass
         pass
+    
     #for s in stats:
     #    (correct, conf, pcls, tcls,tids) = s
     
@@ -355,6 +358,8 @@ def my_test(cfg,
     '''
     return result
 
+
+print("=== 30 cm resolution ==\n\n")
 stats = my_test(cfg='cfg/yolov3-spp.cfg',
                 data='/data/zjc4/chipped-30/xview_data.txt',
                 weights='weights/best-30.pt',
@@ -363,8 +368,17 @@ stats = my_test(cfg='cfg/yolov3-spp.cfg',
                 conf_thres=0.001,
                 iou_thres=0.25,
                 save_json=True)
-    
-    
+
+print("=== 90 cm resolution ==\n\n")
+stats = my_test(cfg='cfg/yolov3-spp.cfg',
+                data='/data/zjc4/chipped-90/xview_data.txt',
+                weights='weights/best-90.pt',
+                batch_size=32,
+                img_size=416,
+                conf_thres=0.001,
+                iou_thres=0.25,
+                save_json=True)
+
 
 def test(cfg,
          data,
