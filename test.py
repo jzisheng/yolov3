@@ -25,8 +25,9 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls,target_ids):
     _ ,tMask = np.unique(target_ids, return_index=True)
     target_cls, target_ids = target_cls[tMask],target_ids[tMask]
     
-    labels = ["buildings" ,"small aircraft", 
-          "large aircraft","vehicles","bus","boat"]
+    labels = ["Buildings" ,"Small Aircraft", 
+          "Large aircraft","Vehicles","Bus/Trucks","Boat"]
+    colors = ['b','g','r','g','m','y']
 
         
     # Sort by objectness
@@ -40,19 +41,28 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls,target_ids):
     # number class, number iou thresholds (i.e. 10 for mAP0.5...0.95)
     s = [len(unique_classes), tp.shape[1]]  
     ap, p, r = np.zeros(s), np.zeros(s), np.zeros(s)
-    plt.figure(dpi=80,figsize=(5,5))
+    plt.figure(dpi=80)
     print("{:15},{:10},{:10},{:10},{:10},{:10}".format("label","    n_gt","  n_preds",
                                                  "    tp","     fp","  mAP@0.25"))
+    plt.figure(dpi=200)
     for ci, c in enumerate(unique_classes):
         mask = (target_cls == c)
-        print("=====")
-        print(len(np.unique(target_ids[mask])))
         i = pred_cls == c
         n_gt_mask = (target_cls == c)  # Number of ground truth objects
         n_gt = (target_cls == c).sum()  # Number of ground truth objects
         n_p = i.sum()  # Number of predicted objects
             
+        
         if n_p == 0 or n_gt == 0:
+            fpc = (1 - tp[i]).cumsum(0)
+            tpc = tp[i].cumsum(0)
+            
+            tp_sum = tp[i].sum(0)
+            fp_sum = (1 - tp[i]).sum(0)
+            print("{:15},{:10},{:10},{:10},{:10},{:10}".format(labels[int(c)],0,len(tp[i]),
+                                                               int(tp_sum),int(fp_sum),
+                                                               0))
+            p[ci] = 0
             continue
         else:
             # Accumulate FPs and TPs
@@ -63,7 +73,7 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls,target_ids):
             fp_sum = (1 - tp[i]).sum(0)
             print("{:15},{:10},{:10},{:10},{:10},{:10}".format(labels[int(c)],n_gt,len(tp[i]),
                                                                int(tp_sum),int(fp_sum),
-                                                               str(tp_sum/(tp_sum+fp_sum))))
+                                                               str( round(float(tp_sum/(tp_sum+fp_sum)),2) ) ))
             
             # Recall
             recall = tpc / (n_gt + 1e-16)  # recall curve
@@ -75,9 +85,12 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls,target_ids):
             # AP from recall-precision curve
             for j in range(tp.shape[1]):
                 ap[ci, j] = compute_ap(recall[:, j], precision[:, j])
-            # Plot
+                pass
             
-            plt.plot(recall,precision,label=labels[int(c)])
+            # recall = np.append(recall,recall[-1])
+            # precision = np.append(precision,0)
+            # Plot            
+            plt.plot(recall,precision,label=labels[int(c)],c=colors[int(c)])
             plt.xlabel('Recall')
             plt.ylabel('Precision')
             plt.title("model performance")
@@ -85,14 +98,14 @@ def my_ap_per_class(tp, conf, pred_cls, target_cls,target_ids):
             plt.xlim(0,1)
             pass
         pass
-    plt.legend()
-    plt.show()
 
 
     # Compute F1 score (harmonic mean of precision and recall)
     f1 = 2 * p * r / (p + r + 1e-16)
-
-    return p, r, ap, f1, unique_classes.astype('int32')
+    plt.legend()
+    plt.show()
+    
+    return ((p, r, ap, f1, unique_classes.astype('int32') ) , plt )
 
 
 def my_test(cfg,
@@ -130,7 +143,7 @@ def my_test(cfg,
     #path = data['test']  # path to test images
     names = load_classes(data['names'])  # class names
     #iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
-    iouv = torch.linspace(0.2, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
+    iouv = torch.linspace(0.25, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     iouv = iouv[0].view(1)  # comment for mAP@0.5:0.95
     niou = iouv.numel()
     
@@ -257,13 +270,13 @@ def my_test(cfg,
                         ious_ = ious
                         ious, i = ious.max(1)  # best ious rowwise, and idx
                         #print(ious)
-                        for k in(ious <= 0.25).nonzero():
+                        for k in(ious <= iouv[0]).nonzero():
                             rowIdx = i[k] # best iou by column
                             did = tids[rowIdx]                            
                             d_ids[did] = (k, i[k], 0,0)
                             pass
                         
-                        for k in(ious > 0.25).nonzero():
+                        for k in(ious > iouv[0]).nonzero():
                             rowIdx = i[k] # best iou by column
                             did = tids[rowIdx]
 
@@ -288,7 +301,7 @@ def my_test(cfg,
                                     toRemove.append(k_)
                                     toRemoveGt.append(i_k)                                    
                                     ious[k] = interDict[did]/unionDict[did]
-                                    mask = (ious[k] > iouv).cpu()
+                                    mask = (ious[k] > iouv[0]).cpu()
                                     pass                    
                                 correct[pi[k]] = mask.cpu()  # iou_thres is 1xn
                                 d_ids[did] = (k, i[k], interDict[did],unionDict[did])
@@ -305,8 +318,8 @@ def my_test(cfg,
             
             # Append statistics (correct, conf, pcls, tcls,tids)
             stat = (correct, pred[:, 4].cpu(), pred[:, 5].cpu(),tcls,tids)
-            stat = (correct[a], pred[a, 4].cpu(), pred[a, 5].cpu(),
-                    np.array(tcls), np.array(tids))
+            #stat = (correct[a], pred[a, 4].cpu(), pred[a, 5].cpu(),
+            #        np.array(tcls), np.array(tids))
             stats.append(stat)
             pass
         pass
@@ -320,7 +333,8 @@ def my_test(cfg,
     
     result = stats
     if len(stats):
-        p, r, ap, f1, ap_class = my_ap_per_class(*stats)
+        stat,plt = my_ap_per_class(*stats)
+        p, r, ap, f1, ap_class = stat
 
         if niou > 1:
             p, r, ap, f1 = p[:, 0], r[:, 0], ap.mean(1), ap[:, 0]  # [P, R, AP@0.5:0.95, AP@0.5]
@@ -358,7 +372,7 @@ def my_test(cfg,
     '''
     return result
 
-
+'''
 print("=== 30 cm resolution ==\n\n")
 stats = my_test(cfg='cfg/yolov3-spp.cfg',
                 data='/data/zjc4/chipped-30/xview_data.txt',
@@ -378,7 +392,7 @@ stats = my_test(cfg='cfg/yolov3-spp.cfg',
                 conf_thres=0.001,
                 iou_thres=0.25,
                 save_json=True)
-
+'''
 
 def test(cfg,
          data,

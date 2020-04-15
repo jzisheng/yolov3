@@ -421,7 +421,7 @@ class DarkNetFormatter():
             myfile.write('\n'.join(lines))
         pass
 
-    def transformDatum(self,datum,res_out=30,shape=(416,416),
+    def transformDatum(self,datum,res_out=30,shape=(600,600),
                        chipImage=False,showImg=False):
         """
         takes in as input list of tuples corresponding to
@@ -436,7 +436,7 @@ class DarkNetFormatter():
         pass
     
 import math
-def chip_image(img,coords,classes,shape=(300,300),chipImage=False):
+def chip_image(img,coords,classes,shape=(600,600),chipImage=False):
     """
     Chip an image and get relative coordinates and classes.  Bounding boxes that pass into
         multiple chips are clipped: each portion that is in a chip is labeled. For example,
