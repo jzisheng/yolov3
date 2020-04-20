@@ -1,4 +1,4 @@
-import aug_util as aug
+import aug_util as aug 
 import wv_util as wv
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -220,13 +220,13 @@ class XviewDataset():
         df.columns = ["grouped cls","og label",'count']
         return df
     
-    def splitTrainTest(self):
+    def splitTrainTest(self,debug=False):
         allGroupedClasses = []
         for a in self.grouped_classes:
             allGroupedClasses.extend(a)
         #allLabelCounts = self.getLabelCounts()
         labelCounts,allLabelCounts = self.getLabelCounts()
-        idxs,numd = self.findBalance(labelCounts[:,1:], 0.8, 0.1)
+        idxs,numd = self.findBalance(labelCounts[:,1:], 0.8, 0.1,debug=debug)
         train_ind, test_ind = idxs
         
         train_tifs = self.indToTifName(labelCounts,train_ind)
@@ -254,6 +254,7 @@ class DarkNetFormatter():
         self.classes = classes_
         self.grouped_classes = grouped_classes_
         self.res_native=30
+        self.all_c_ids = []
         pass
     
     def filterClasses(self,chip_coords,chip_classes,grouped_classes):
@@ -283,7 +284,7 @@ class DarkNetFormatter():
         plt.show()
         pass
 
-    def toDarknetFmt(self,c_box,c_cls,c_img,debug=False):
+    def toDarknetFmt(self,c_box,c_cls,c_img,c_ids, debug=False):
         szx,szy,_ = c_img.shape
         c_box[:,0],c_box[:,2] = c_box[:,0]/szx,c_box[:,2]/szx
         c_box[:,1],c_box[:,3] = c_box[:,1]/szy,c_box[:,3]/szy
@@ -291,12 +292,14 @@ class DarkNetFormatter():
         ws,hs = (xmax-xmin), (ymax-ymin)
         x_center, y_center = xmin+(ws/2),ymin+(hs/2)
         # Visualize using mpl
-        if debug:
+        if debug == True:
             plotDarknetFmt(c_img,x_center,y_center,ws,hs,c_cls,szx,szy)
-        result = np.vstack((c_cls,x_center,y_center,ws,hs)).T
-        result[:,1:] = np.clip(result[:,1:],0.001,0.999)
-        assert (result[:, 1:] > 0, "values less than 0")
-        assert(result[:, 1:] <= 1,"Values not normalized")
+            pass
+        # result = np.vstack((c_cls,x_center,y_center,ws,hs)).T            
+        result = np.vstack((c_cls,x_center,y_center,ws,hs,c_ids)).T
+        result[:,1:5] = np.clip(result[:,1:5],0.001,0.999)
+        assert (result[:, 1:5] > 0).all(), "values less than 0"
+        assert (result[:, 1:5] <= 1).all(),"Values not normalized"
         return result
 
     def checkDir(self,filepath):
@@ -316,7 +319,8 @@ class DarkNetFormatter():
         resized = cv.resize(blur, dim, interpolation = cv.INTER_AREA)
         return resized
     
-    def parseChip(self,c_img, c_box, c_cls,img_num,c_dir,res_out=30,showImg = False):
+    def parseChip(self,c_img, c_box, c_cls,c_ids,
+                  img_num,c_dir,res_out=30,showImg = False):
         # Parses chips, saves chip image, and also saves corresponding labels
         fnames = []
         
@@ -330,22 +334,22 @@ class DarkNetFormatter():
         
         for c_idx in range(c_img.shape[0]):
             c_name = "{:06}_{:02}".format(int(img_num), c_idx)
-            sbox,scls,simg = \
-                c_box[c_idx],c_cls[c_idx],c_img[c_idx]
+            sbox,scls,simg,sid = \
+                c_box[c_idx],c_cls[c_idx],c_img[c_idx], c_ids[c_idx]
+            #print(sid)
             if showImg:
                 labelled = aug.draw_bboxes(simg,sbox)
                 plt.figure(figsize=(10,10))
                 plt.imshow(labelled)
-                print(c_name)
+                #print(c_box[:,4])
                 plt.title(str(c_name)+" "+str(simg.shape))
                 plt.axis('off')
                 break
-
-            
+                
             # Change chip into darknet format, and save
-            result = self.toDarknetFmt(sbox,scls,simg)
+            result = self.toDarknetFmt(sbox,scls,simg,sid)
             ff_l = "{}labels/{}.txt".format(c_dir,c_name)
-            np.savetxt(ff_l, result, fmt='%i %1.6f %1.6f %1.6f %1.6f')
+            np.savetxt(ff_l, result, fmt='%i %1.6f %1.6f %1.6f %1.6f %i')
             # Save image to specified dir
             ff_i = "{}images/{}.jpg".format(c_dir,c_name)
             
@@ -358,7 +362,7 @@ class DarkNetFormatter():
     def exportChipImages(self,image_paths,c_dir,set_str,res_out=30,
                          showImg=False,shape=(600,600),chipImage=False):
         fnames = []
-        # image_paths = sorted(image_paths)
+        #image_paths = sorted(image_paths)
         for img_pth in image_paths:
             try:
                 img_pth = self.input_dir+'train_images/'+img_pth
@@ -373,17 +377,16 @@ class DarkNetFormatter():
                 scale = self.res_native/res_out
                 if res_out != 30:
                     arr = self.downsampleImage(arr,res_out=res_out)
-                    chip_coords = chip_coords*scale
+                    chip_coords[:,:4] = chip_coords[:,:4]*scale
                 # Chip the tif image into tiles
-                c_img, c_box, c_cls = wv.chip_image(img=arr, coords=chip_coords, 
-                                                    classes=chip_classes, shape=shape,
-                                                    chipImage=chipImage)
+                c_img, c_box, c_cls,c_ids  = chip_image(img=arr, coords=chip_coords, 
+                                                           classes=chip_classes, shape=shape,
+                                                           chipImage=chipImage)
                 if showImg:
                     result = []
                     for key in c_cls.keys():
                         result.extend(c_cls[key])
                     print("number of classes: {}".format(len(result)))
-
                     for i,img in enumerate(c_img[:5]):
                         labelled = aug.draw_bboxes(c_img[i],c_box[i])
                         plt.imshow(labelled)
@@ -392,8 +395,8 @@ class DarkNetFormatter():
                         pass
                     break
                     pass
-                
-                c_fnames = self.parseChip(c_img, c_box, c_cls, img_num, c_dir,res_out)
+                c_fnames = self.parseChip(c_img, c_box, c_cls, c_ids,
+                                          img_num, c_dir,res_out)
                 fnames.extend(c_fnames)
 
             except FileNotFoundError as e:
@@ -406,9 +409,10 @@ class DarkNetFormatter():
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
             pass
-
+        
         outputTxtPath = self.output_dir+"xview_img_{}.txt".format(set_str)
 
+        print(outputTxtPath)
         if os.path.exists(outputTxtPath):
             os.remove(outputTxtPath)
             pass
@@ -430,6 +434,86 @@ class DarkNetFormatter():
                                   chipImage=chipImage)
             pass
         pass
+    
+import math
+def chip_image(img,coords,classes,shape=(600,600),chipImage=False):
+    """
+    Chip an image and get relative coordinates and classes.  Bounding boxes that pass into
+        multiple chips are clipped: each portion that is in a chip is labeled. For example,
+        half a building will be labeled if it is cut off in a chip. If there are no boxes,
+        the boxes array will be [[0,0,0,0]] and classes [0].
+        Note: This chip_image method is only tested on xView data-- 
+        there are some image manipulations that can mess up different images.
+
+    Args:
+        img: the image to be chipped in array format
+        coords: an (N,5) array of bounding box coordinates with the last representing ids
+        classes: an (N,1) array of classes for each bounding box
+        shape: an (W,H) tuple indicating width and height of chips
+
+    Output:
+        An image array of shape (M,W,H,C), where M is the number of chips,
+        W and H are the dimensions of the image, and C is the number of color
+        channels.  Also returns boxes and classes dictionaries for each corresponding chip.
+    """
+    assert coords.shape[1]==5 ,"Invalid dim: No unique coord idx labels to the 5th col"
+    
+    height,width,_ = img.shape
+    if chipImage == False:
+        # don't chip image and return original size
+        wn,hn = np.max(img.shape),np.max(img.shape)        
+        w_num,h_num = 1,1
+    else:
+        height,width,_ = img.shape
+        wn,hn = shape
+        w_num,h_num = (int(math.ceil(width/wn)),int(math.ceil(height/hn)))
+        pass
+    
+    w_new,h_new = wn*(w_num),hn*(h_num)
+    # Make new image with padded edges
+    temp_img = np.zeros((h_new,w_new,3))
+    temp_img[:height,:width,:] = img
+    img = temp_img
+    # Resulting images
+    images = np.zeros((w_num*h_num,hn,wn,3))
+    
+    total_boxes = {}
+    total_classes = {}
+    total_ids = {}
+    
+    k = 0
+    for i in range(w_num):
+        for j in range(h_num):
+            x = np.logical_or( np.logical_and((coords[:,0]<((i+1)*wn)),(coords[:,0]>(i*wn))),
+                               np.logical_and((coords[:,2]<((i+1)*wn)),(coords[:,2]>(i*wn))))
+            out = coords[x]
+            y = np.logical_or( np.logical_and((out[:,1]<((j+1)*hn)),(out[:,1]>(j*hn))),
+                               np.logical_and((out[:,3]<((j+1)*hn)),(out[:,3]>(j*hn))))
+            outn = out[y]
+            out = np.transpose(np.vstack((np.clip(outn[:,0]-(wn*i),0,wn),
+                                          np.clip(outn[:,1]-(hn*j),0,hn),
+                                          np.clip(outn[:,2]-(wn*i),0,wn),
+                                          np.clip(outn[:,3]-(hn*j),0,hn))))
+            box_classes = classes[x][y]
+            bbox_ids = coords[x][y][:,4]
+            
+            if out.shape[0] != 0:
+                total_boxes[k] = out
+                total_classes[k] = box_classes
+                total_ids[k] = bbox_ids
+            else:
+                total_boxes[k] = np.array([[0,0,0,0]])
+                total_classes[k] = np.array([0])
+                total_ids[k] = np.array([0])                
+            
+            chip = img[hn*j:hn*(j+1),wn*i:wn*(i+1),:3]
+            images[k]=chip
+            
+            k = k + 1
+            pass
+    
+    return images.astype(np.uint8),total_boxes,total_classes,total_ids
+
 #if __name__ == "main":
 # Load dataset
 '''
